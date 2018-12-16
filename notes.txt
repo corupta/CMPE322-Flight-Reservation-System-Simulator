@@ -1,0 +1,3 @@
+sleep function that works in milliseconds is created with reference to 
+https://stackoverflow.com/a/28827188
+so that it works on both POSIX standards: the old and deprecated usleep for old OSes and the new nanosleep for new OSes
