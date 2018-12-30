@@ -7,10 +7,10 @@ if ! [ -x "$(command -v markdown-pdf)" ]; then
   exit 1
 fi
 
-if ! [ -x "$(command -v ots)" ]; then
-  echo 'Error: ots (opentimestamps-client) is not installed.'
-  exit 1
-fi
+#if ! [ -x "$(command -v ots)" ]; then
+#  echo 'Error: ots (opentimestamps-client) is not installed.'
+#  exit 1
+#fi
 
 if ! [ -x "$(command -v zip)" ]; then
   echo 'Error: zip is not installed.'
@@ -26,7 +26,7 @@ cp src/Makefile Makefile
 cp src/project2.c project2.c
 
 zip 2016400141.zip -r project2.c Makefile Report.pdf
-ots stamp 2016400141.zip
+#ots stamp 2016400141.zip
 # ots upgrade 2016400141.zip.ots
 rm Makefile
 rm project2.c

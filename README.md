@@ -31,6 +31,8 @@
     3. Wait for the client to request reservation of a seatID.
     4. Tries to reserve that seat, and if it's already reserved, go back to step 2. Otherwise, reply with a `NULL` response indicating a successfull reservation.
      
+ ---
+ 
 ### Message Protocol
 There's a message lock for each client and server which are initially locked.
 
