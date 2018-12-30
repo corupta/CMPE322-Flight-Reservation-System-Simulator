@@ -1,1 +1,8 @@
+# editor specific files
 .idea
+
+# runnable, created via make
+flightReservationSystemSimulation
+
+# output file, generated via running the program
+output.txt

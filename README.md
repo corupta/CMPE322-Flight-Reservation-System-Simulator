@@ -3,7 +3,7 @@ Simulating a Flight Reservation System with multiple threaded programming
 
 ## How to Compile
 ```
-gcc project2_mutex.c
+gcc project2.c
 ```
 (doing so would create an executable called `a.out`)
 

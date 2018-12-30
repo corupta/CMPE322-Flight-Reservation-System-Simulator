@@ -24,6 +24,7 @@ pthread_mutex_t messageLockForServer[MAX_NOF_SEATS]; // all locked initially
  *    repeats 1-2A until 2B is achieved.
  */
 // CLIENT COMMANDS FOR MESSAGING
+// mutexes in the requests - responses are used to switch working state between server and client threads
 void sendRequest(int clientID, void* message) {
   messages[clientID-1] = message;  // write the request(message) - server is waiting
   pthread_mutex_unlock(messageLockForServer+clientID-1);  // trigger server - from now on a new response may come
@@ -67,16 +68,18 @@ int nofReserved = 0;
 int nofSeats;
 
 typedef struct seat_list {
-    char seats[MAX_NOF_SEATS],
-    int nofSeats,
-    int nofReferences,
-            pthread_mutex_t referenceLock
+    char seats[MAX_NOF_SEATS];
+    int nofSeats;
+    int nofReferences; // number of references to this object (delete the object when this reaches to 0)
+    pthread_mutex_t referenceLock; // lock to change the number of references and delete the object when it hits to 0
 } seat_list;
 
 pthread_mutex_t changeLockForCurrentSeatList;
 pthread_mutex_t updateLockForNextSeatList;
 
 seat_list* currentSeatList;
+
+FILE* outputFile;
 
 void updateCurrentSeatList();
 void initializeGlobals() {
@@ -94,59 +97,101 @@ void initializeGlobals() {
   pthread_mutex_init(&changeLockForCurrentSeatList, NULL);
   pthread_mutex_init(&updateLockForNextSeatList, NULL);
   updateCurrentSeatList(); // initialize currentSeatList
+  outputFile = fopen("output.txt", "w"); // open output file
 }
 // ========================================== GLOBALS FOR SERVER & MAIN ENDS ==========================================
 
 // ================================== SEAT_LIST HANDLERS(READ-DISPOSE-UPDATE) BEGINS ==================================
 seat_list* readSeatList() {
-  pthread_mutex_lock(&changeLockForCurrentSeatList);
-  seat_list* seatList = currentSeatList;
+  pthread_mutex_lock(&changeLockForCurrentSeatList); // prevent the pointer to be changed or invalidated
+  // updates to current seat list pointer prevented with that lock, which also means current list will have at least
+  // 1 as the nofReferences (the global reference), so it will not be deleted until that lock is unlocked.
+  seat_list* seatList = currentSeatList; // get the pointer of the current seat list
+  // do not unlock changeLock yet, since that could result in invalidation of the object if its references go below 0
+  // before the following increase.
   pthread_mutex_lock(&(seatList->referenceLock));
+  // critical section for increasing the number of references for that list.
   ++(seatList->nofReferences);
+  // critical section for increasing the number of references for that list ends.
   pthread_mutex_unlock(&(seatList->referenceLock));
-  pthread_mutex_unlock(&changeLockForReferencedSeatList);
+  // now that the current list has its reference for the function caller set, that means it will not be invalidated
+  // until at least the caller decides to dispose it (no more use of it)
+  pthread_mutex_unlock(&changeLockForCurrentSeatList);
+  // now, that it's guaranteed to have at least 1 reference other than the global, global reference can be removed and
+  // also the currentList pointer can be changed. (unlock change lock)
   return seatList;
 }
 void disposeSeatList(seat_list* seatList) {
   pthread_mutex_lock(&(seatList->referenceLock));
+  // critical section for decreasing the number of references for that list and deletion of it.
   --(seatList->nofReferences);
+  // critical section for decreasing the number of references for that list ends.
   if (seatList->nofReferences == 0) {
     // it's safe to delete now - no other references to that list
     free(seatList);
+    // critical section for deleting the list ends. since it's deleted from the memory, there's no lock anymore.
   } else {
     pthread_mutex_unlock(&(seatList->referenceLock));
+    // unlock the lock since the critical section for decreasing the number of references ended
+    // and the list was not deleted.
   }
 }
 void updateCurrentSeatList() {
+  // prepare the next seat list, initially set defaults before critical section
   seat_list* nextSeatList;
-  nextSeatList = (seat_list*)mallock(sizeof(seat_list));
+  nextSeatList = (seat_list*)malloc(sizeof(seat_list));
   int i;
   nextSeatList->nofSeats = nofSeats;
   nextSeatList->nofReferences = 1;
-  pthread_mutex_init(&(nextSeatList->referenceLock));
+  pthread_mutex_init(&(nextSeatList->referenceLock), NULL);
+  // defaults of the seat list is ready
   pthread_mutex_lock(&updateLockForNextSeatList);
+  // critical section for creating a new seat list, so that each next created list would never be older than a previous
+  // one. It can be the same if concurrent reserved seats called this function concurrently, and if the both
+  // reservations were finished before this function. However, that's not a problem since it's guaranteed that the
+  // latest created list will always include all reservations.
   for (i = 0; i < MAX_NOF_SEATS; ++i) {
     nextSeatList->seats[i] = seats[i] != 0;
     // != 0 => so, do not send the client info about which client reserved which seat
     // instead only send info about whether each seat is reserved (security & privacy)
   }
+  // now that the next list is created, current list pointer should be swapped, and the global reference for the current
+  // list should be removed. (call dispose)
   pthread_mutex_lock(&changeLockForCurrentSeatList);
+  // critical section for swapping current seat list pointer
   seat_list* prevSeatList = currentSeatList;
   currentSeatList = nextSeatList;
+  // critical section for swapping current seat list pointer ends
   pthread_mutex_unlock(&changeLockForCurrentSeatList);
+  // next list is successfully created and replaced with current list, now the critical section for creating next list
+  // ends, and newer lists can be created.
   pthread_mutex_unlock(&updateLockForNextSeatList);
-  if (prevSeatList != NULL) {
+  if (prevSeatList != NULL) { // prevSeatList is NULL only initially (when it is used to initialize the current list)
+  // remove the global reference to the old list and if there're not any more references to it, delete it.
+  // this is not a prioritized task but is important to prevent memory leaks.
     disposeSeatList(prevSeatList);
   }
 }
 // =================================== SEAT_LIST HANDLERS(READ-DISPOSE-UPDATE) ENDS ===================================
 
 // ========================================= UTILITY/HELPER FUNCTIONS BEINGS ==========================================
+/**
+ * @param min (integer)
+ * @param max (integer >= min)
+ * @return a random integer number between min and max, both inclusive
+ */
 int getRandom(int min, int max) {
   return (random() % (max - min + 1)) + min;
 }
 
-void millisleep(int milliseconds) {
+/**
+ * sleep for the given amount of milliseconds
+ * created with reference to https://stackoverflow.com/a/28827188 so that it works on both POSIX standards:
+ * the old and deprecated usleep for old OSes and the new nanosleep for new OSes
+ * since there's no definite explanation on what the testing system will be except that it supports POSIX.
+ * @param milliseconds
+ */
+void milliSleep(int milliseconds) {
 #if _POSIX_C_SOURCE >= 199309L
   struct timespec sleepTime;
   sleepTime.tv_sec = milliseconds / 1000; // always 0 in our case, though.
@@ -169,7 +214,7 @@ int tryToReserveSeat(int seatID, int clientID) {
 
   pthread_mutex_lock(&reserveLock); // lock while an ongoing reserve to make sure prints are in correct order
   /* critical section for printing a reservation */
-  fprintf(stdout, "Client%d reserves Seat%d\n", clientID, seatID);
+  fprintf(outputFile, "Client%d reserves Seat%d\n", clientID, seatID);
   ++ nofReserved;
   /* critical section for printing a reservation ends */
   pthread_mutex_unlock(&reserveLock); // unlock reserve lock after print is finished (also count of reserved)
@@ -228,33 +273,34 @@ void *client(void *param) {
   int waitTime = getRandom(MIN_WAIT_TIME, MAX_WAIT_TIME);
 
   // wait for that amount
-  millisleep(waitTime);
+  milliSleep(waitTime);
 
   // start trying reservations
   int seatID, nofEmptySeats, i, seatIndex;
 
   sendRequest(clientID, NULL); // initial request
-  seat_list* list = (seat_list*)receiveResponse(clientID); // initial response
+  seat_list *list = (seat_list*)receiveResponse(clientID); // initial response
 
-  while (seat_list != NULL) {
+  while (list != NULL) {
     // RECEIVED A RESPONSE WITH A LIST, MEANING WE DID NOT/FAILED TO RESERVE A SEAT, SO WE SHOULD PICK A SEAT
     nofEmptySeats = 0; // determine how many seats are available
-    for (i = 0; i < seat_list->nofSeats; ++i) {
-      if (seat_list->seats[i] == 0) {
+    for (i = 0; i < list->nofSeats; ++i) {
+      if (list->seats[i] == 0) {
         ++nofEmptySeats;
       }
     }
-    seatIndex = getRandom(1, nofEmptySeats);
-    for (i = 0; i < seat_list->nofSeats; ++i) {
-      if (seat_list->seats[i] == 0) {
+    seatIndex = getRandom(1, nofEmptySeats); // pick a random number up to number of empty seats
+    for (i = 0; i < list->nofSeats; ++i) { // find the seat id that random number corresponds to
+      if (list->seats[i] == 0) {
         --seatIndex;
         if (seatIndex == 0) {
           seatID = i + 1;
         }
       }
     }
-    sendRequest(clientID, &seatID);
-    list = (seat_list*) receiveResponse(clientID);
+    sendRequest(clientID, &seatID); // send a request to reserve that seat
+    list = (seat_list*) receiveResponse(clientID); // get response of that request either a new list of seats meaning
+    // the reservation failed, or NULL, meaning the reservation was successfull.
   }
 
   pthread_exit(0);
@@ -263,7 +309,7 @@ void *client(void *param) {
 int main(int argc, char* argv[]) {
   // HANDLE INPUT ARGUMENT
   if (argc != 2) {
-    fprintf(stderr, "Usage: ./a.out <nofSeats: integer in range [50, 100]>\n");
+    fprintf(stderr, "Usage: ./flightReservationSystemSimulation <nofSeats: integer in range [50, 100]>\n");
     return -1;
   }
   nofSeats = atoi(argv[1]);
@@ -286,7 +332,7 @@ int main(int argc, char* argv[]) {
   int clientIDs[nofSeats];
   int i;
 
-  fprintf(stdout, "Number of total seats: %d\n", nofSeats);
+  fprintf(outputFile, "Number of total seats: %d\n", nofSeats);
 
   // CREATE THREADS
   for (i = 0; i < nofSeats; ++i) {
@@ -304,7 +350,7 @@ int main(int argc, char* argv[]) {
   
   // CHECK IF ALL SEATS ARE RESERVED SUCCESSFULLY
   if (nofSeats == nofReserved) {
-    fprintf(stdout, "All seats are reserved.\n");
+    fprintf(outputFile, "All seats are reserved.\n");
   } else {
     fprintf(stderr, "Error! %d seats are reserved out of %d seats.", nofReserved, nofSeats);
     return -1;
