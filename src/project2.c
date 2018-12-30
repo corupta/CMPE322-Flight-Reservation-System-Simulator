@@ -346,6 +346,7 @@ int main(int argc, char* argv[]) {
   // WAIT THREADS TO FINISH
   for (i = 0; i < nofSeats; ++i) {
     pthread_join(clients[i], NULL);
+    pthread_join(servers[i], NULL);
   }
   
   // CHECK IF ALL SEATS ARE RESERVED SUCCESSFULLY

@@ -19,10 +19,8 @@ fi
 
 rm 2016400141.zip
 rm 2016400141.zip.ots
-cd Report
-markdown-pdf Report.md -o Report.pdf
-mv Report.pdf ../Report.pdf
-cd ..
+rm Report.pdf
+markdown-pdf Readme.md -o Report.pdf
 
 cp src/Makefile Makefile
 cp src/project2.c project2.c
@@ -30,8 +28,6 @@ cp src/project2.c project2.c
 zip 2016400141.zip -r project2.c Makefile Report.pdf
 ots stamp 2016400141.zip
 # ots upgrade 2016400141.zip.ots
-rm Report.pdf
-rm Documentation.pdf
 rm Makefile
 rm project2.c
 rm -r 2016400141
